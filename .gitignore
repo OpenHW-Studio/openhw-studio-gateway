@@ -1,0 +1,4 @@
+openhw-gw
+*.log
+.tmp/
+.DS_Store
