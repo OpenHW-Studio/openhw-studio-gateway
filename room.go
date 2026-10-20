@@ -98,6 +98,7 @@ func gvisorToClientsLoop(room *Room) {
 			ethType := binary.BigEndian.Uint16(buf[12:14])
 			fmt.Printf("[%s] [gVisor -> Hub] << Eth Frame (dst=%x, src=%x, type=0x%04x, len=%d)\n", time.Now().Format("15:04:05.000"), dst, src, ethType, length)
 		}
+		logDNSFrame("gw->guest", buf)
 
 		// Broadcast frame to all clients
 		room.Lock()

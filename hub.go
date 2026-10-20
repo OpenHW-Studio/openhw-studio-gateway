@@ -118,6 +118,7 @@ func handleClient(client *Client, room *Room) {
 				ethType := binary.BigEndian.Uint16(msg[12:14])
 				fmt.Printf("[%s] [ESP32 -> Hub] >> Eth Frame (dst=%x, src=%x, type=0x%04x, len=%d)\n", time.Now().Format("15:04:05.000"), dst, src, ethType, len(msg))
 			}
+			logDNSFrame("guest->gw", msg)
 
 			// Intercept DHCP Packets
 			packet := gopacket.NewPacket(msg, layers.LayerTypeEthernet, gopacket.Default)
