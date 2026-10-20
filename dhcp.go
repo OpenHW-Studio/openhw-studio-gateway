@@ -209,31 +209,47 @@ func handleDHCP(msg []byte, packet gopacket.Packet, client *Client, room *Room) 
 	var replyDHCP *dhcpv4.DHCPv4
 	serverIP := net.IPv4(192, 168, 4, 1)
 	routerIP := net.IPv4(192, 168, 4, 1)
-	dnsIP := net.IPv4(8, 8, 8, 8)
+	// DNS servers advertised in the lease.
+	//
+	// PRIMARY: the gateway's OWN resolver (192.168.4.1:53) — the gVisor VN
+	// runs a DNS server bound to the gateway IP (gvisor-tap-vsock
+	// pkg/virtualnetwork/services.go: dnsServer() binds GatewayIP:53) and
+	// it resolves through the HOST resolver. That is the only resolver that
+	// lives in the guest's own L2 domain, so it always answers.
+	//
+	// SECONDARY: 8.8.8.8 — kept as a fallback for guests that need the
+	// public resolver (the VN reaches it through the gVisor UDP forwarder,
+	// which dials the public resolver from the host). Advertised second so
+	// a guest never has to leave the VN for a name lookup.
+	//
+	// Before this change the lease advertised 8.8.8.8 ONLY, so a guest
+	// that took its resolver from DHCP depended on the host's direct
+	// internet path; a guest with a static IP had no resolver at all.
+	dnsServers := []net.IP{serverIP, net.IPv4(8, 8, 8, 8)}
 	netmask := net.IPv4Mask(255, 255, 255, 0)
 
 	msgType := dhcpPacket.MessageType()
 	if msgType == dhcpv4.MessageTypeDiscover {
-		fmt.Printf("[DHCP] Intercepted DISCOVER from %s. Offering %s\n", macString, assignedIP)
+		fmt.Printf("[DHCP] Intercepted DISCOVER from %s. Offering %s (dns %v)\n", macString, assignedIP, dnsServers)
 		replyDHCP, _ = dhcpv4.NewReplyFromRequest(dhcpPacket,
 			dhcpv4.WithMessageType(dhcpv4.MessageTypeOffer),
 			dhcpv4.WithYourIP(assignedIP),
 			dhcpv4.WithServerIP(serverIP),
 			dhcpv4.WithOption(dhcpv4.OptServerIdentifier(serverIP)),
 			dhcpv4.WithRouter(routerIP),
-			dhcpv4.WithDNS(dnsIP),
+			dhcpv4.WithDNS(dnsServers...),
 			dhcpv4.WithNetmask(netmask),
 			dhcpv4.WithLeaseTime(86400),
 		)
 	} else if msgType == dhcpv4.MessageTypeRequest {
-		fmt.Printf("[DHCP] Intercepted REQUEST from %s. Acknowledging %s\n", macString, assignedIP)
+		fmt.Printf("[DHCP] Intercepted REQUEST from %s. Acknowledging %s (dns %v)\n", macString, assignedIP, dnsServers)
 		replyDHCP, _ = dhcpv4.NewReplyFromRequest(dhcpPacket,
 			dhcpv4.WithMessageType(dhcpv4.MessageTypeAck),
 			dhcpv4.WithYourIP(assignedIP),
 			dhcpv4.WithServerIP(serverIP),
 			dhcpv4.WithOption(dhcpv4.OptServerIdentifier(serverIP)),
 			dhcpv4.WithRouter(routerIP),
-			dhcpv4.WithDNS(dnsIP),
+			dhcpv4.WithDNS(dnsServers...),
 			dhcpv4.WithNetmask(netmask),
 			dhcpv4.WithLeaseTime(86400),
 		)
