@@ -47,6 +47,15 @@ type Room struct {
 	NextIP    byte
 	MacToIP   map[string]net.IP
 	NAT64     *Nat64Engine
+
+	// apOwner is the board that CLAIMS the gateway address (192.168.4.1)
+	// for itself — a guest soft AP (Pico W `WiFi.beginAP()` hardcodes the
+	// AP netif to .1, the same address the gateway hands out). While a
+	// room has an apOwner the gateway must NOT answer ARP requests for
+	// .1 with its own MAC: that would steal the request from the real
+	// owner and the joining STA could never reach the AP-hosted server.
+	// The claim is learned from the member's own frames (see hub.go).
+	apOwner *Client
 }
 
 var (
@@ -164,6 +173,11 @@ func removeClient(client *Client, room *Room) {
 	room.Lock()
 	delete(room.Clients, client)
 	isEmpty := len(room.Clients) == 0
+	// A soft AP that left the room releases the gateway address back to
+	// the gateway (the next ARP for .1 is answered by the gateway again).
+	if room.apOwner == client {
+		room.apOwner = nil
+	}
 	room.Unlock()
 	fmt.Println("[Network Gateway] Client disconnected.")
 

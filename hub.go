@@ -25,12 +25,40 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"net"
 	"time"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/gorilla/websocket"
 )
+
+// gatewayIP is the gateway's own address on the room subnet. A guest
+// soft AP (Pico W `WiFi.beginAP()`) hardcodes the SAME address for its
+// AP netif, so a room may legitimately contain a board that owns .1.
+// See room.APOwner / room.ClaimAPOwner and the ARP block in handleClient.
+var gatewayIP = net.IPv4(192, 168, 4, 1)
+
+// ClaimAPOwner records that `client` owns the gateway address (a guest
+// soft AP). The room then stops answering ARP requests for .1 so the AP
+// itself answers them.
+func (r *Room) ClaimAPOwner(client *Client) {
+	r.Lock()
+	defer r.Unlock()
+	if r.apOwner == client {
+		return
+	}
+	r.apOwner = client
+	fmt.Printf("[Room %s] Board claims %s as a soft AP — the gateway yields ARP replies for it\n",
+		r.SessionId, gatewayIP.String())
+}
+
+// APOwnerSet reports whether a board in this room owns the gateway address.
+func (r *Room) APOwnerSet() bool {
+	r.Lock()
+	defer r.Unlock()
+	return r.apOwner != nil
+}
 
 // handleClient reads Ethernet frames from a specific WebSocket client and multiplexes them.
 func handleClient(client *Client, room *Room) {
@@ -124,14 +152,38 @@ func handleClient(client *Client, room *Room) {
 			packet := gopacket.NewPacket(msg, layers.LayerTypeEthernet, gopacket.Default)
 			if arpLayer := packet.Layer(layers.LayerTypeARP); arpLayer != nil {
 				arp, _ := arpLayer.(*layers.ARP)
+				// Learn who owns the gateway address: a room member that
+				// puts 192.168.4.1 in the SENDER protocol address claims
+				// it — that is a guest soft AP (the arduino-pico WiFi
+				// library hardcodes the AP netif to .1). Once claimed,
+				// the gateway stops answering .1 ARP requests so the AP
+				// itself can answer them.
+				if net.IP(arp.SourceProtAddress).Equal(gatewayIP) {
+					room.ClaimAPOwner(client)
+				}
 				// Answer ARP for the gateway IP right here: gVisor's cold
 				// stack can take ~1s to answer its first ARP, which breaks
 				// the board's first reply of a session (it ARPs, hears
 				// nothing, and drops the frame).
 				if arp.Operation == layers.ARPRequest &&
-					(arp.DstProtAddress[0] == 192 && arp.DstProtAddress[1] == 168 &&
-						arp.DstProtAddress[2] == 4 && arp.DstProtAddress[3] == 1) {
+					net.IP(arp.DstProtAddress).Equal(gatewayIP) {
+					if room.APOwnerSet() {
+						// A soft AP owns .1 in this room: do NOT steal the
+						// reply. Forward the request to the room only
+						// (never to gVisor — it would answer with the
+						// gateway MAC and overwrite the AP's answer in
+						// the requester's ARP cache) and let the AP
+						// answer for itself.
+						broadcastOthers(room, client, msg)
+						continue
+					}
 					sendARPReply(client, arp)
+					// Also hand the request to the room: if a soft AP is
+					// up it must see the request — its answer is what
+					// teaches the gateway that .1 belongs to a board
+					// (the next request is then routed to the AP instead
+					// of the gateway).
+					broadcastOthers(room, client, msg)
 					continue
 				}
 			}
